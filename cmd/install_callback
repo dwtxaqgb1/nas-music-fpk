@@ -1,0 +1,138 @@
+#!/bin/bash
+# 安装后回调 - 只做快速配置，不启动服务（飞牛会自动调 main start）
+CONFIG_FILE="${TRIM_PKGVAR}/data/config.js"
+COMPOSE_FILE="${TRIM_APPDEST}/docker-compose.yml"
+NGINX_CONF="${TRIM_APPDEST}/nginx/nginx.conf"
+
+# 修改下载目录volume映射（cache指向用户目录）
+if [ -n "$wizard_musicdir" ]; then
+  mkdir -p "$wizard_musicdir"
+  sed -i "s|\\\${TRIM_PKGVAR}/cache:/server/cache|${wizard_musicdir}:/server/cache|" "$COMPOSE_FILE"
+fi
+
+# 修改密码环境变量
+if [ -n "$wizard_password" ]; then
+  sed -i "s|FRONTEND_PASSWORD=.*|FRONTEND_PASSWORD=${wizard_password}|" "$COMPOSE_FILE"
+  sed -i "s|\"123456\";|\"${wizard_password}\";|" "$NGINX_CONF"
+fi
+
+# 修改端口
+if [ -n "$wizard_port" ]; then
+  sed -i "s|\"5200:80\"|\"${wizard_port}:80\"|" "$COMPOSE_FILE"
+  sed -i "s|\"port\": \"5200\"|\"port\": \"${wizard_port}\"|" "${TRIM_APPDEST}/ui/config" 2>/dev/null
+  sed -i "s|service_port.*|service_port = ${wizard_port}|" manifest 2>/dev/null
+fi
+
+# 等待配置文件生成
+for i in $(seq 1 30); do
+  if [ -f "$CONFIG_FILE" ]; then break; fi
+  sleep 1
+done
+
+if [ -f "$CONFIG_FILE" ]; then
+  sed -i 's|"admin.path": "[^"]*"|"admin.path": ""|g' "$CONFIG_FILE"
+  sed -i 's|"user.enablePublicRestriction": true|"user.enablePublicRestriction": false|g' "$CONFIG_FILE"
+  sed -i 's|"user.enablePublicNonAdminServerCache": false|"user.enablePublicNonAdminServerCache": true|g' "$CONFIG_FILE"
+  sed -i 's|"user.enablePublicFavorites": false|"user.enablePublicFavorites": true|g' "$CONFIG_FILE"
+  sed -i 's|"user.enablePublicNonAdminAccess": false|"user.enablePublicNonAdminAccess": true|g' "$CONFIG_FILE"
+fi
+
+# === 飞牛音乐桥接（可选）- 只写配置，不启动 ===
+if [ "$wizard_enable_bridge" = "1" ]; then
+  touch "${TRIM_PKGVAR}/bridge_enabled"
+  BRIDGE_PORT="8773"
+  BRIDGE_CACHE="${wizard_musicdir:-/vol1/1000/音乐/歌曲下载}"
+  NMD_URL="http://127.0.0.1:${wizard_port:-5200}"
+
+  # 写桥接配置文件供 main start 使用
+  cat > "${TRIM_PKGVAR}/bridge.env" <<ENV
+BRIDGE_PORT=${BRIDGE_PORT}
+BRIDGE_CACHE=${BRIDGE_CACHE}
+NMD_URL=${NMD_URL}
+ENV
+
+  # 立即部署 fnmusic-ext 和桥接脚本（不启动，main start 会启动）
+  FNME_DIR="/vol1/@appcenter/fnmusic-ext/repo"
+  if [ ! -f "$FNME_DIR/proxy/app.py" ]; then
+    mkdir -p "$FNME_DIR"
+    tar xzf "${TRIM_APPDEST}/fnmext-src.tgz" -C "$FNME_DIR"
+    chmod +x "$FNME_DIR"/*.sh 2>/dev/null
+
+    cat > "$FNME_DIR/.env" <<ENV
+FNMUSIC_HOME='$FNME_DIR'
+FNMUSIC_CACHE_DIR='$FNME_DIR/cache'
+FNMUSIC_FAV_DIR='$FNME_DIR/online_favorites'
+FNMUSIC_PLT_DIR='$FNME_DIR/playlist_tracks'
+FNMUSIC_PLAY_HISTORY_DIR='$FNME_DIR/play_history'
+FNMUSIC_RECOMMEND_DIR='$FNME_DIR/recommend_cache'
+FNMUSIC_MUSICDL_ENABLED='false'
+FNMUSIC_NETEASE_ENABLED='false'
+FNMUSIC_LX_ENABLED='true'
+FNMUSIC_LX_URL='http://127.0.0.1:${BRIDGE_PORT}'
+FNMUSIC_WEBUI_ENABLED='false'
+FNMUSIC_TEE_SAVE_ENABLED='false'
+FNMUSIC_DEPLOY_MODE='docker'
+ENV
+
+    # 后台 build docker 镜像（不阻塞安装）
+    if ! docker image inspect fnmusic-sources:latest >/dev/null 2>&1; then
+      nohup bash -c "cd $FNME_DIR && bash ensure_base_image.sh && docker build -f container/Dockerfile --build-arg BASE_IMAGE=docker.1ms.run/library/python:3.13-slim -t fnmusic-sources:latest . > /tmp/fnmext-build.log 2>&1" &
+    fi
+  else
+    sed -i "s|^FNMUSIC_LX_URL=.*|FNMUSIC_LX_URL='http://127.0.0.1:${BRIDGE_PORT}'|" "$FNME_DIR/.env"
+  fi
+
+  # 总是重建 systemd unit（防止卸载重装后 unit 丢失）
+  cat > /etc/systemd/system/fnmusic-ext.service <<UNIT
+[Unit]
+Description=fnmusic-ext Proxy Service (Socket Takeover)
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$FNME_DIR
+ExecStart=/bin/bash "$FNME_DIR/proxy/run_proxy.sh"
+ExecStartPost=/usr/bin/python3 "$FNME_DIR/proxy/takeover.py" ready --timeout 65
+ExecStopPost=/usr/bin/python3 "$FNME_DIR/proxy/takeover.py" restore
+TimeoutStartSec=75
+TimeoutStopSec=20
+KillMode=mixed
+Restart=no
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  # 部署桥接脚本
+  cp "${TRIM_APPDEST}/lx_bridge.py" /usr/local/bin/lx_bridge.py
+  chmod +x /usr/local/bin/lx_bridge.py
+  mkdir -p "$BRIDGE_CACHE"
+  chmod 777 "$BRIDGE_CACHE"
+
+  cat > /etc/systemd/system/lx-bridge.service <<UNIT
+[Unit]
+Description=fnmusic-ext <-> lxserver bridge
+After=network.target docker.service
+
+[Service]
+Type=simple
+Environment=NMD_URL=${NMD_URL}
+Environment=CACHE_DIR=${BRIDGE_CACHE}
+Environment=SELF_URL=http://127.0.0.1:${BRIDGE_PORT}
+Environment=BRIDGE_PORT=${BRIDGE_PORT}
+ExecStart=/usr/bin/python3 /usr/local/bin/lx_bridge.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable lx-bridge fnmusic-ext
+fi
+
+exit 0

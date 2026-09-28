@@ -1,0 +1,17 @@
+appname                    = com.nasmusic.download
+version                    = 16.5.2
+display_name               = NAS歌曲下载
+desc                       = 基于lxserver的NAS歌曲搜索、播放与批量下载工具（含飞牛音乐桥接）。安装完成后打开登录，在设置里上传音源，飞牛音乐才可以搜索
+platform                   = x86
+source                     = thirdparty
+maintainer                 = nas-music
+distributor                = nas-music
+desktop_uidir              = ui
+desktop_applaunchname      = com.nasmusic.download.main
+service_port               = 5200
+checkport                  = false
+ctl_stop                   = true
+disable_authorization_path = false
+micro_app                  = false
+os_min_ver                 = 0.9.0
+checksum                   = e89b84becb045ad936116751ac0872e6

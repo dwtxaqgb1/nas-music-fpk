@@ -1,0 +1,45 @@
+#!/bin/bash
+# NAS歌曲下载 - 启停脚本
+COMPOSE_DIR="${TRIM_APPDEST:-/vol1/@appcenter/com.nasmusic.download}"
+
+case $1 in
+  start)
+    cd "$COMPOSE_DIR" || exit 1
+    docker compose up -d 2>>"${TRIM_TEMP_LOGFILE:-/dev/null}"
+    RC=$?
+    if [ $RC -ne 0 ]; then exit $RC; fi
+
+    # --- start bridge services (if enabled) ---
+    BRIDGE_FLAG="${TRIM_PKGVAR}/bridge_enabled"
+    if [ -f "$BRIDGE_FLAG" ]; then
+      systemctl daemon-reload 2>/dev/null
+      systemctl restart lx-bridge 2>/dev/null
+      systemctl restart fnmusic-ext 2>/dev/null || true
+    fi
+    exit 0
+    ;;
+  stop)
+    BRIDGE_FLAG="${TRIM_PKGVAR}/bridge_enabled"
+    if [ -f "$BRIDGE_FLAG" ]; then
+      systemctl stop fnmusic-ext 2>/dev/null
+      systemctl stop lx-bridge 2>/dev/null
+    fi
+    cd "$COMPOSE_DIR" || exit 1
+    docker compose down 2>>"${TRIM_TEMP_LOGFILE:-/dev/null}"
+    exit $?
+    ;;
+  status)
+    cd "$COMPOSE_DIR" || exit 3
+    # check all containers are running
+    containers=$(docker compose ps -q 2>/dev/null)
+    [ -z "$containers" ] && exit 3
+    for cid in $containers; do
+      running=$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)
+      [ "$running" != "true" ] && exit 3
+    done
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac

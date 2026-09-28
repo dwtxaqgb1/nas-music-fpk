@@ -1,0 +1,19 @@
+#!/bin/bash
+# 卸载回调：清理桥接和 fnmusic-ext
+systemctl stop lx-bridge fnmusic-ext 2>/dev/null
+systemctl disable lx-bridge fnmusic-ext 2>/dev/null
+rm -f /etc/systemd/system/lx-bridge.service /etc/systemd/system/fnmusic-ext.service
+rm -f /usr/local/bin/lx_bridge.py
+
+# 恢复 fnmusic 官方 socket
+FNME_DIR="/vol1/@appcenter/fnmusic-ext/repo"
+if [ -d "$FNME_DIR" ]; then
+  cd "$FNME_DIR" && bash restore.sh --full 2>/dev/null
+  docker rm -f fnmusic-sources 2>/dev/null
+fi
+# 删除 fnmusic-ext 残留
+rm -rf /vol1/@appcenter/fnmusic-ext/repo
+rm -rf /vol1/@appdata/fnmusic-ext /vol1/@apphome/fnmusic-ext /vol1/@appconf/fnmusic-ext
+
+systemctl daemon-reload
+exit 0
